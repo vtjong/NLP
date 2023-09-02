@@ -1,4 +1,4 @@
-## Latent Struct
+# Latent Semantic Structure Toolkit
 To run, follow the steps below:
 
 1. **Prepare Your CONLLU File**:
