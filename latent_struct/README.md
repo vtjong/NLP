@@ -1,10 +1,5 @@
-# Universal Dependencies to Stanford Dependency Converter
-
-This tool is designed to convert Universal Dependencies (CONLLU) files into the Stanford Dependency format.
-
 ## Usage
-
-To run this converter, follow the steps below:
+To run, follow the steps below:
 
 1. **Prepare Your CONLLU File**:
    - Ensure you have your Universal Dependencies file (CONLLU_FILE) ready. A sample subset of the Universal Dependencies corpus is provided as `ud.conllu`, with some problematic lines removed.
