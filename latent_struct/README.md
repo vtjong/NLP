@@ -1,4 +1,4 @@
-## Usage
+## Latent Struct
 To run, follow the steps below:
 
 1. **Prepare Your CONLLU File**:
