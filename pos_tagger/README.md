@@ -12,7 +12,8 @@ for Hidden Markov Models (HMMs).
 - **Output:** Saves the trained HMM to `model.hmm`
 
 ```bash
-python3 mle.py hotcold.super```
+python3 mle.py hotcold.super
+```
 
 ## `likelihood.py`
 
@@ -24,7 +25,8 @@ python3 mle.py hotcold.super```
 - **Output:** Saves forward and backward log likelihood and matrices to `hmm.likelihood`
 
 ```bash
-python likelihood.py model.hmm test.seqs```
+python likelihood.py model.hmm test.seqs
+```
 
 ## `decoding.py`
 
@@ -35,7 +37,8 @@ python likelihood.py model.hmm test.seqs```
 - **Output:** Saves the best hidden state sequence and log likelihood to `hmm.decoding`
 
 ```bash
-python decoding.py model.hmm test.seqs```
+python decoding.py model.hmm test.seqs
+```
 
 ## `learning.py`
 
@@ -48,5 +51,6 @@ python decoding.py model.hmm test.seqs```
 - **Output:** Saves the updated HMM to `hmm.learning`.
 
 ```bash
-python learning.py model.hmm hotcold.unsuper```
+python learning.py model.hmm hotcold.unsuper
+```
 
