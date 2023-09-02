@@ -1,6 +1,7 @@
 # Part-of-Speech Tagger
 This module contains an implementation of a POS tagger and sequence decoder 
-for Hidden Markov Models (HMMs).
+for Hidden Markov Models (HMMs) for the theory in:
+https://cs.brown.edu/research/ai/dynamics/tutorial/Documents/HiddenMarkovModels.html. 
 
 ## `mle.py`
 
@@ -20,8 +21,7 @@ python3 mle.py hotcold.super
 **Description:** This script computes the likelihood of an observation sequence given an HMM.
 
 - **Input:** HMM file (`model.hmm`) and test sequence (`test.seqs`)
-- **Forward Algorithm:** Computes the likelihood of the sequence using the forward algorithm.
-- **Backward Algorithm:** Computes the likelihood of the sequence using the backward algorithm.
+- **Forward-Backward Algorithm:** Computes the likelihood of the sequence using the forward algorithm.
 - **Output:** Saves forward and backward log likelihood and matrices to `hmm.likelihood`
 
 ```bash
@@ -46,7 +46,7 @@ python decoding.py model.hmm test.seqs
 
 - **Input:** HMM file (`model.hmm`) and a set of observation sequences (e.g., `hotcold.unsuper`).
 - **HMM Initialization:** The HMM parameters are initialized as specified.
-- **Learning Algorithm:** Utilizes the Forward-Backward algorithm to infer the correct parameters for the given HMM based on the provided observations.
+- **Learning Algorithm:** Utilizes the Baum-Welsh Forward-Backward algorithm to infer the correct parameters for the given HMM based on the provided observations.
 - **Convergence:** Treats the model as converged when the forward sequence probability fails to increase by more than 0.1 log likelihood over 3 iterations.
 - **Output:** Saves the updated HMM to `hmm.learning`.
 

@@ -167,8 +167,6 @@ class Learning:
         # Update global gamma history matrix
         self.gamma_history.append(gamma)
         self.gamma_history_sums.append(np.sum(gamma))
-    
-
 
     def tau(self, sequence, seq_idx, T_total):
         """
