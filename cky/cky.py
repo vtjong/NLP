@@ -8,7 +8,9 @@ class TreeMaker:
 
     def get_best_root(self, *args):
         """
-        [get_best_root()] computes the most likely root after viterbi is completed and the associated probability [max]. If one cannot be found, outputs [fail_flag] indicating as such. 
+        [get_best_root()] computes the most likely root after viterbi is completed
+        and the associated probability [max]. If one cannot be found, 
+        outputs [fail_flag] indicating as such. 
         """
         n, trellis = args
         best_root_pr, best_root_idx = 0, str()
@@ -49,7 +51,8 @@ class TreeMaker:
 
     def tree_handler(self, bkptr, root_info, sentence):
         """
-        [tree_handler()] handles all the backtracing, tree building logic for given a tree with [root], accessing children through [bckptr].
+        [tree_handler()] handles all the backtracing, tree building logic for 
+        given a tree with [root], accessing children through [bckptr].
         """
         n, root_pos = len(sentence), self.idx_pos[root_info[2]]
 
@@ -61,7 +64,8 @@ class TreeMaker:
 
         # General case
         lt_ptr, rt_ptr, lt_lab, rt_lab = self.get_children(root_info[:2], root_info[2], bkptr)
-        root_left_tree, root_right_tree = self.tree_traverse(lt_ptr, lt_lab, bkptr, sentence), self.tree_traverse(rt_ptr, rt_lab, bkptr, sentence)
+        root_left_tree = self.tree_traverse(lt_ptr, lt_lab, bkptr, sentence)
+        root_right_tree = self.tree_traverse(rt_ptr, rt_lab, bkptr, sentence)
         tree += " " + root_left_tree + " " + root_right_tree + ")"
 
         return tree
@@ -89,7 +93,8 @@ class CKY:
         [cky_base()] initializes cky data structs and fills in base probabilities.
         """
         num_words = len(sentence)
-        trellis = np.zeros((num_words, num_words, self.num_tags)) # chart contains probs from lower trig mat
+        # chart contains probs from lower trig mat
+        trellis = np.zeros((num_words, num_words, self.num_tags)) 
         bckptr = np.empty_like(trellis, dtype=object)
         bckptr.fill((-1, (-1, -1), (-1, -1), -1, -1))   
 
@@ -106,7 +111,8 @@ class CKY:
         [cky_ind()] conducts the inductive step for a given sentence.
         """
         # We are going to use log probabilities so we should add them
-        # When we use log probabilities, they are all negative, but the less negative the better, so we still compare by doing if contender > current one
+        # When we use log probabilities, they are all negative, but the less 
+        # negative the better, so we still compare by doing if contender > current one
         i,j,k = args
         row, col = i - k - 1, j + k + 1
         
@@ -128,7 +134,13 @@ class CKY:
 
                 if (valid_prob and contender_is_sup):
                     trellis[i, j, node_idx] = contender_pr
-                    bckptr[i, j, node_idx] = (contender_pr, (k, j), (row, col),left_idx, right_idx) 
+                    bckptr[i, j, node_idx] = (
+                        contender_pr,
+                        (k, j),
+                        (row, col),
+                        left_idx,
+                        right_idx
+                    )
 
     def cky(self, sentence):
         """
@@ -158,7 +170,8 @@ class CKY:
             
     def parse_pcfg(self):
         '''
-        [parse_pcfg()] reads in grammar file and generates structures to store pos tags, vocab, and probabilities of both. 
+        [parse_pcfg()] reads in grammar file and generates structures to store 
+        pos tags, vocab, and probabilities of both. 
         '''  
         input_file = sys.argv[1]
         with open(input_file, "r") as file:
@@ -166,7 +179,8 @@ class CKY:
         for line in file:
             line = line.split(" ")
             if line[0] == "G":
-                node, left_child, right_child, log_prob = line[1], line[3], line[4], np.exp(float(line[-1]))
+                node, left_child, right_child = line[1], line[3], line[4]
+                log_prob = np.exp(float(line[-1]))
                 self.pos.update((node, left_child, right_child))
                 self.make_dict(self.pos_pr, (left_child, right_child), node, log_prob)
             elif line[0] == "X":
@@ -174,20 +188,27 @@ class CKY:
                 self.pos.add(preterm)
                 self.make_dict(self.word_pr, term, preterm, log_prob)
         self.pos = list(self.pos)
-        self.pos_idx = {key: idx for (key, idx) in zip(self.pos, list(range(len(self.pos))))}
+        self.pos_idx = {key: idx for idx, key in enumerate(self.pos)}
         self.idx_pos = {idx:key for (key, idx) in self.pos_idx.items()}
-        self.tree_roots_idx = {pos:idx for (pos,idx) in self.pos_idx.items() if "ROOT" in pos and "|" not in pos}
+        self.tree_roots_idx = {
+            pos: idx
+            for pos, idx in self.pos_idx.items()
+            if "ROOT" in pos and "|" not in pos
+        }
         self.tree_roots = list(self.tree_roots_idx.keys())
 
     def parse_testfile(self):
         """
-        [parse_testfile()] reads in testfile and generates a list of test sentences, saved in [self.sentences].
+        [parse_testfile()] reads in testfile and generates a list of test sentences, 
+        saved in [self.sentences].
         """
         test_file = sys.argv[2]
         with open(test_file) as test_file:
             sentences = test_file.read().strip().split("\n")
-
-        self.sentences = [[word if word in self.word_pr else "<UNK-T>" for word in sentence.split(" ")] for sentence in sentences]
+        self.sentences = [
+            [word if word in self.word_pr else "<UNK-T>" for word in sent.split(" ")]
+            for sent in sentences
+        ]
 
     def save_it_up(self):
         """

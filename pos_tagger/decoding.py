@@ -21,7 +21,8 @@ class Decoding:
 
     def parse_hmm(self):
         """
-        [parse_hmm()] reads in model from model.hmm and initializes data structures containing observations, pos, emissions, and transitions.
+        [parse_hmm()] reads in model from model.hmm and initializes data 
+        structures containing observations, pos, emissions, and transitions.
         """
         model_file = sys.argv[1]
         with open(model_file) as file:
@@ -37,11 +38,13 @@ class Decoding:
                 self.transitions.setdefault(word_from, {})
                 self.transitions[word_from][word_to] = float(prob)
 
-        self.pos = {idx: val for (idx, val) in zip(list(range(1, len(self.emissions) + 1)), list(self.emissions.keys()))}
+        # self.pos = {idx: val for (idx, val) in zip(list(range(1, len(self.emissions) + 1)), list(self.emissions.keys()))}
+        self.pos = {idx: key for idx, key in enumerate(self.emissions, start=1)}
 
     def parse_testfile(self):
         """
-        [parse_testfile()] reads in testfile and generates a list of test sequences into [self.test_seq_list].
+        [parse_testfile()] reads in testfile and generates a list of test 
+        sequences into [self.test_seq_list].
         """
         test_file = sys.argv[2]
         with open(test_file) as test_file:
@@ -51,11 +54,16 @@ class Decoding:
         """
         [unker()] unks words not in self.observations
         """
-        self.sequences = [word if word in self.observations else "<unk>" for word in self.sequences]
+        self.sequences = [word if word in self.observations
+                            else "<unk>" for word in self.sequences]
 
     def viterbi_verifier(self, *args):
         prev_idx, prev_state, curr_state, counter, emission, trellis, bestpathpointer = args
-        contender = self.trellis[prev_idx, counter-1] * self.transitions[prev_state][curr_state]*emission
+        contender = (
+            self.trellis[prev_idx, counter - 1] *
+            self.transitions[prev_state][curr_state] *
+            emission
+        )
         cond = contender > trellis
         trellis = contender if cond else trellis
         bestpathpointer = int(prev_idx) if cond else bestpathpointer
@@ -75,7 +83,8 @@ class Decoding:
     def viterbi_gen(self, *args):
         """
         [viterbi_gen()] handles the core logic for finding best state path.
-        - Need to loop over all previous counter emission values to fill current emission values
+        - Need to loop over all previous counter emission values to fill current 
+        emission values
         """
         word, curr_state, counter, trellis, bestpathpointer = args
 
@@ -84,7 +93,13 @@ class Decoding:
             emission = 0
             if word in self.emissions[curr_state].keys():
                 emission = self.emissions[curr_state][word]
-            trellis, bestpathpointer = self.viterbi_verifier(prev_idx, prev_state, curr_state, counter, emission, trellis, bestpathpointer)
+            trellis, bestpathpointer = self.viterbi_verifier(prev_idx, 
+                                                            prev_state, 
+                                                            curr_state, 
+                                                            counter, 
+                                                            emission, 
+                                                            trellis, 
+                                                            bestpathpointer)
         return trellis, bestpathpointer
         
     def viterbi_end(self, counter):
@@ -92,14 +107,27 @@ class Decoding:
         bestpathpointer = 0   
         for idx in self.pos.keys():
             pos = self.pos[idx]
-            trellis, bestpathpointer = self.viterbi_verifier(idx, pos, self.end_sent, counter, 1, trellis, bestpathpointer)
+            trellis, bestpathpointer = self.viterbi_verifier(
+                idx,
+                pos,
+                self.end_sent,
+                counter,
+                1,
+                trellis,
+                bestpathpointer)
         return trellis, bestpathpointer
 
     def viterbi(self):
         """
-        [viterbi()] uses viterbi algorithm to determine best sequence--the sequence with the best LL. 
-        - Each cell of the trellis, v_t(j), represents the probability that the HMM is in state j after seeing the first t observations and passing through the most probable state sequence q1,...,qt−1, given HMM λ = (A, B). The value of each cell vt(j) is computed by recursively taking the most probable path that could lead us to this cell. 
-        - The algorithm returns the state path through the HMM that assigns maximum likelihood to the observation sequence.
+        [viterbi()] uses viterbi algorithm to determine best sequence--
+        the sequence with the best LL. 
+        - Each cell of the trellis, v_t(j), represents the probability that the 
+        HMM is in state j after seeing the first t observations and passing 
+        through the most probable state sequence q1,...,qt−1, given HMM λ = (A, B). 
+        The value of each cell vt(j) is computed by recursively taking the most 
+        probable path that could lead us to this cell. 
+        - The algorithm returns the state path through the HMM that assigns 
+        maximum likelihood to the observation sequence.
 
         - [counter] represents time stamp t_i of our iterations
         """
@@ -112,7 +140,9 @@ class Decoding:
             else:
                 for curr_idx in self.pos.keys():  # get emission (is obs in label)
                     curr_state = self.pos[curr_idx]
-                    self.trellis[curr_idx, counter], self.backtrace[curr_idx, counter] = self.viterbi_gen(word, curr_state, counter, -1 , 0)
+                    temp = self.viterbi_gen(word, curr_state, counter, -1, 0)
+                    self.trellis[curr_idx, counter] = temp[0]
+                    self.backtrace[curr_idx, counter] = temp[1]
             counter += 1
         
         # end state (end of sentence emissions)

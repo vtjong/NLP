@@ -2,7 +2,7 @@ from cmath import tau
 import sys
 import numpy as np
 
-from vyt3_likelihood import Likelihood
+from likelihood import Likelihood
 
 class Learning:
     def __init__(self):
@@ -17,31 +17,50 @@ class Learning:
 
     def parse_hmm(self):
         """
-        [parse_hmm()] reads in model.hmm and generates initial emission and tranmission matrices based on the indices of the pos tags and vocab labels. 
+        [parse_hmm()] reads in model.hmm and generates initial emission and 
+        tranmission matrices based on the indices of the pos tags and vocab labels. 
         """
         model_file = sys.argv[1]
         with open(model_file) as file:
             lines = file.read().strip().split("\n")
 
         # Collect pos tags and vocabs into pos_set and vocab_set
-        pos_set, vocab_set = {line.split()[1] for line in lines if line.split()[0] == "E"}, {line.split()[2] for line in lines if line.split()[0] == "E"}
-
+        pos_set = {line.split()[1] for line in lines if line.split()[0] == "E"}
+        vocab_set = {line.split()[2] for line in lines if line.split()[0] == "E"}
         # Create pos_tags_to_idx and vocab_to_idx dicts by mapping tags/vocab to idx values
         num_tags, num_vocab = len(pos_set), len(vocab_set)
         self.num_tags, self.num_vocab = num_tags, num_vocab 
-        pos_tags_to_idx, vocab_to_idx = {tag: idx for (tag, idx) in zip(list(pos_set), list(range(num_tags)))}, {vocab: idx for (vocab, idx) in zip(list(vocab_set), list(range(num_vocab)))}
+        pos_tags_to_idx = {tag: idx for (tag, idx) in zip(list(pos_set), list(range(num_tags)))}
+        vocab_to_idx = {vocab: idx for (vocab, idx) in zip(list(vocab_set), list(range(num_vocab)))}
 
-        # Use pos_tags and vocab dicts to create word-key'd emission and transition matrices with idx values; note that number of vocab words is also the total time (T) in textbook formulas
-        emissions, transitions = np.zeros((num_tags, num_vocab)), np.zeros((num_tags + 2, num_tags + 2))
+        # Use pos_tags and vocab dicts to create word-key'd emission and 
+        # transition matrices with idx values; note that number of vocab words 
+        # is also the total time (T) in textbook formulas
+        emissions = np.zeros((num_tags, num_vocab))
+        transitions = np.zeros((num_tags + 2, num_tags + 2))
 
         for line in lines:
             E_or_T, pos_tag, vocab, junk, prob = tuple(line.split())
             if E_or_T == "E":
                 emissions[pos_tags_to_idx[pos_tag], vocab_to_idx[vocab]] = float(prob)
             elif E_or_T == "T":
-                pos_tag_idx = 0 if pos_tag== self.beg_sent else (num_tags + 1 if pos_tag == self.end_sent else pos_tags_to_idx[pos_tag] + 1)
-                vocab_idx = 0 if vocab==self.beg_sent else (num_tags + 1 if vocab == self.end_sent else pos_tags_to_idx[vocab] + 1)
-                transitions[pos_tag_idx, vocab_idx] = float(prob)
+                if pos_tag == self.beg_sent:
+                    pos_tag_idx = 0
+                elif pos_tag == self.end_sent:
+                    pos_tag_idx = num_tags + 1
+                else:
+                    pos_tag_idx = pos_tags_to_idx[pos_tag] + 1
+                
+                if vocab == self.beg_sent:
+                    vocab_idx = 0
+                elif vocab == self.end_sent:
+                    vocab_idx = num_tags + 1
+                else:
+                    vocab_idx = pos_tags_to_idx[vocab] + 1
+            # elif E_or_T == "T":
+            #     pos_tag_idx = 0 if pos_tag== self.beg_sent else (num_tags + 1 if pos_tag == self.end_sent else pos_tags_to_idx[pos_tag] + 1)
+            #     vocab_idx = 0 if vocab==self.beg_sent else (num_tags + 1 if vocab == self.end_sent else pos_tags_to_idx[vocab] + 1)
+            transitions[pos_tag_idx, vocab_idx] = float(prob)
 
         return emissions, transitions, pos_tags_to_idx, vocab_to_idx, vocab_set
 
@@ -53,7 +72,10 @@ class Learning:
     
     def parse_testfile(self):
         """
-        [parse_testfile()] reads in testfile and generates a list of test sequences into [self.sequences], which is then unked by [self.unker(sequences)]. Note that each sequence is a list of string observations, so [self.sequences] is a list of lists. 
+        [parse_testfile()] reads in testfile and generates a list of test 
+        sequences into [self.sequences], which is then unked by [self.unker(sequences)].
+        Note that each sequence is a list of string observations, so 
+        [self.sequences] is a list of lists. 
         """
         test_file = sys.argv[2]
         with open(test_file) as test_file:
@@ -64,14 +86,19 @@ class Learning:
     
     def forward(self, sequence, seq_idx, T_total):
         """
-        [forward(sequence, seq_idx, T_total)] updates the [seq_idx]th entry in alpha matrix [self.alpha_history] and calculates log likelihood prob for a particular sequence number [seq_idx].
+        [forward(sequence, seq_idx, T_total)] updates the [seq_idx]th entry in 
+        alpha matrix [self.alpha_history] and calculates log likelihood prob for 
+        a particular sequence number [seq_idx].
         """
         # Initialize Step: t= 0 case
         t = 0
         alpha = np.zeros((self.num_tags + 2, T_total))
         test_word = str(sequence[t])
         test_word_idx = self.vocab[test_word]
-        alpha[1:self.num_tags + 1, t] = np.array([self.transitions[0, j + 1] * self.emissions[j, test_word_idx] for j in range(self.num_tags)])
+        alpha[1 : self.num_tags + 1, t] = np.array([
+            self.transitions[0, j + 1] * self.emissions[j, test_word_idx]
+            for j in range(self.num_tags)
+        ])
 
         # Recursive Step
         for t in range(1, T_total):
@@ -79,7 +106,11 @@ class Learning:
             test_word_idx = self.vocab[test_word]
             for j in range(self.num_tags):
                 for i in range(self.num_tags):
-                    alpha[j+1, t]+= alpha[i+1, t-1] * self.transitions[i+1, j + 1] * self.emissions[j, test_word_idx]
+                    alpha[j + 1, t] += (
+                        alpha[i + 1, t - 1] *
+                        self.transitions[i + 1, j + 1] *
+                        self.emissions[j, test_word_idx]
+                    )
 
         # Termination Step: t = T_total case
         prob = 0
@@ -95,7 +126,8 @@ class Learning:
 
     def backward(self, sequence, seq_idx, T_total):
         """
-        [backward(sequence, seq_idx, T_total)] updates beta matrix the [seq_idx]th entry in [self.beta_history].
+        [backward(sequence, seq_idx, T_total)] updates beta matrix the 
+        [seq_idx]th entry in [self.beta_history].
         """
         # Initialize Step: same shape as beta at time stamp seq_idx; t= T_total case
         t = -1 
@@ -123,7 +155,8 @@ class Learning:
 
     def gamma(self, sequence, seq_idx, T_total):
         """
-        [gamma(sequence, seq_idx, T_total)] performs the E-step in the algorithm, updating the [seq_idx]th entry in the [self.gamma_history] matrix. 
+        [gamma(sequence, seq_idx, T_total)] performs the E-step in the algorithm, 
+        updating the [seq_idx]th entry in the [self.gamma_history] matrix. 
         """    
         alpha, beta =  self.alpha_history[seq_idx], self.beta_history[seq_idx]
         gamma = np.zeros((self.num_tags, T_total))
@@ -140,7 +173,8 @@ class Learning:
 
     def tau(self, sequence, seq_idx, T_total):
         """
-        [tau(sequence, seq_idx, T_total)] performs the E-step in the algorithm, updating the [seq_idx]th entry in the [self.tau_history] matrix. 
+        [tau(sequence, seq_idx, T_total)] performs the E-step in the algorithm, 
+        updating the [seq_idx]th entry in the [self.tau_history] matrix. 
         """    
         alpha, beta = self.alpha_history[seq_idx], self.beta_history[seq_idx]
         tau = np.zeros((T_total + 1, self.num_tags + 2, self.num_tags + 2))
@@ -236,7 +270,8 @@ class Learning:
 
     def forward_backward(self):
         """
-        [forward_backward()] performs Baum-Welch, a special class of EM (expectation-maximization) algorithms. 
+        [forward_backward()] performs Baum-Welch, a special class of EM 
+        (expectation-maximization) algorithms. 
         """
         # Initialize alphas, betas, gammas, and taus across time stamps
         self.alpha_history, self.beta_history = [], []

@@ -1,6 +1,5 @@
 import sys
 import numpy as np
-import itertools 
 
 class MLE:
     def __init__(self):
@@ -42,7 +41,9 @@ class MLE:
 
     def mle(self):
         '''
-        [mle()] reads in all CL arguments and generates matrices containing emission and transition probabilities, handling unking, add-one smoothing, and probability calculations.
+        [mle()] reads in all CL arguments and generates matrices containing 
+        emission and transition probabilities, handling unking, add-one smoothing, 
+        and probability calculations.
         '''
         input_file = sys.argv[1]
         with open(input_file) as file:
@@ -85,7 +86,8 @@ class MLE:
                             
             for transition in self.transitions.keys():
                 for transition_key in self.transitions[transition].keys():
-                    file.write("T " + transition + " " + transition_key + " : " + str(self.transitions[transition][transition_key]))
+                    file.write("T " + transition + " " + transition_key + " : " + 
+                            str(self.transitions[transition][transition_key]))
                     file.write("\n")
 
 def main():

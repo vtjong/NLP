@@ -62,7 +62,10 @@ class MLE:
 
     def traverse(self, tree, curr_tag, unitary_tag, train):
         '''
-        [traverse()] traverses through tree [tree] with string tag [curr_tag] and builds up grammar G and X lists recursively. If [train] is true, then [traverse] adds lexeme to self.vocab, otherwise it replaces it with "<UNK-T>".
+        [traverse()] traverses through tree [tree] with string tag [curr_tag] 
+        and builds up grammar G and X lists recursively. 
+        If [train] is true, then [traverse] adds lexeme to self.vocab,
+        else it replaces it with "<UNK-T>".
         '''
 
         # curr_tag = curr_tag if '+' or "UNK" in curr_tag else tree.c
@@ -100,7 +103,8 @@ class MLE:
 
     def tree_traverse(self, tree_list, train):
         '''
-        [tree_traverse()] takes care of the tree reading logic and calls traverse for each tree, corresponding to a sentence. 
+        [tree_traverse()] takes care of the tree reading logic and calls traverse 
+        for each tree, corresponding to a sentence. 
         '''
         for tree_str in tree_list:
             tree = Tree()   
@@ -112,10 +116,13 @@ class MLE:
         '''
         [parse_file()] 
 
-        - Read in the entire file and then replace the newline characters with spaces by using string replace or regex
+        - Read in the entire file and then replace the newline characters 
+        with spaces by using string replace or regex
         - Split on the "(ROOT" and store each one in a list
-            - But you have to prepend that in bcuz splitting on "(ROOT" gets rid of it and we still need that
-        - tree.Tree.read() returns an empty string, but you need to first create a tree object and then 
+            - But you have to prepend that in bcuz splitting on "(ROOT" gets 
+            rid of it and we still need that
+        - tree.Tree.read() returns an empty string, but you need to first create 
+        a tree object 
         '''  
         
         # Read in trees 
@@ -151,7 +158,8 @@ class MLE:
 
             for transition in self.X.keys():
                 for transition_key in self.X[transition].keys():
-                    file.write("X " + transition + " : " + transition_key + " " + str(self.X[transition][transition_key]))
+                    file.write("X " + transition + " : " + transition_key + " " + 
+                     str(self.X[transition][transition_key]))
                     file.write("\n")
         
 def main():

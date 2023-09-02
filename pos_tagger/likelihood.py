@@ -23,7 +23,8 @@ class Likelihood:
 
     def parse_hmm(self):
         """
-        [parse_hmm()] reads in model from model.hmm and initializes data structures containing observations, latent states, emissions, and transitions.
+        [parse_hmm()] reads in model from model.hmm and initializes data structures 
+        containing observations, latent states, emissions, and transitions.
         """
         model_file = sys.argv[1]
         with open(model_file) as file:
@@ -39,11 +40,12 @@ class Likelihood:
                 self.transitions.setdefault(word_from, {})
                 self.transitions[word_from][word_to] = float(prob)
 
-        self.pos = {idx: val for (idx, val) in zip(list(range(1, len(self.emissions) + 1)), list(self.emissions.keys()))}
+        self.pos = {idx: val for idx, val in enumerate(self.emissions, start=1)}
 
     def parse_testfile(self):
         """
-        [parse_testfile()] reads in testfile and generates a list of test sequences into [self.sequences].
+        [parse_testfile()] reads in testfile and generates a list of test 
+        sequences into [self.sequences].
         """
         test_file = sys.argv[2]
         with open(test_file) as test_file:
@@ -53,11 +55,15 @@ class Likelihood:
         """
         [unker()] unks words not in self.observations
         """
-        self.sequences = [word if word in self.observations else "<unk>" for word in self.sequences]
+        self.sequences = [
+            word if word in self.observations else "<unk>"
+            for word in self.sequences
+        ]
 
     def forward_beg(self, counter, word):
         """
-        [forward_beg(counter, word)] is a helper function that handles the beg case of forward logic for the forward-backward algorithm.
+        [forward_beg(counter, word)] is a helper function that handles the beg 
+        case of forward logic for the forward-backward algorithm.
         """
         for idx in self.pos.keys():
             key = self.pos[idx]
@@ -68,7 +74,8 @@ class Likelihood:
 
     def forward_gen(self, counter, word):
         """
-        [forward_gen(counter, word)] is a helper function that handles the general case of forward logic for the forward-backward algorithm.
+        [forward_gen(counter, word)] is a helper function that handles the general 
+        case of forward logic for the forward-backward algorithm.
         """
         for idx in self.pos.keys():
             state = self.pos[idx]
@@ -83,7 +90,8 @@ class Likelihood:
 
     def forward(self):
         """
-        [forward()] handles the forward logic for the forward-backward algorithm and calculates likehoods in alpha. 
+        [forward()] handles the forward logic for the forward-backward algorithm 
+        and calculates likehoods in alpha. 
         """
         counter = 0
         for word in self.sequences:
@@ -97,7 +105,10 @@ class Likelihood:
         counter -= 1
 
         # end case states
-        alpha_end = np.array([self.alpha[idx, counter] * self.transitions[self.pos[idx]][self.end_sent] for idx in range(1, len(self.pos))])
+        alpha_end = np.array([
+            self.alpha[idx, counter] * self.transitions[self.pos[idx]][self.end_sent]
+            for idx in range(1, len(self.pos))
+        ])
 
         self.alpha[0, counter] = np.sum(alpha_end)
         return np.log(self.alpha[0, counter])
@@ -105,7 +116,8 @@ class Likelihood:
 
     def backward_gen(self, counter, prev_word):
         """
-        [backward_gen(counter, prev_word)] is a helper function that handles the general case of backward logic for the forward-backward algorithm.
+        [backward_gen(counter, prev_word)] is a helper function that handles the 
+        general case of backward logic for the forward-backward algorithm.
         """
         for idx in self.pos.keys():
             state = self.pos[idx]
@@ -115,12 +127,17 @@ class Likelihood:
                 emission = 0
                 if prev_word in self.emissions[prev_state].keys():
                     emission = self.emissions[prev_state][prev_word] 
-                var += emission * self.transitions[state][prev_state] * self.beta[prev_idx, counter+1] 
+                var += (
+                    emission *
+                    self.transitions[state][prev_state] *
+                    self.beta[prev_idx, counter + 1]
+                )
             self.beta[idx, counter] = var
 
     def backward(self):
         """
-        [backward()] handles the backward logic for the forward-backward algorithm and calculates likehoods in beta. 
+        [backward()] handles the backward logic for the forward-backward 
+        algorithm and calculates likehoods in beta. 
         """
         init_counter = self.beta.shape[1] - 1
         counter = init_counter
@@ -139,11 +156,14 @@ class Likelihood:
         # beg states
         for index in self.pos.keys():
             key = self.pos[index]
-            emission = self.emissions[key][prev_word] if prev_word in self.emissions[key].keys(
-            ) else 0
-            self.beta[self.beta.shape[0]-1, 0] += self.transitions["<s>"][key] * emission * self.beta[index, 0]
-
-        return np.log(self.beta[self.beta.shape[0]-1, 0])
+            if prev_word in self.emissions[key]:
+                emission = self.emissions[key][prev_word]
+            else:
+                emission = 0
+            last_row = self.beta.shape[0] - 1
+            beta_val = self.transitions["<s>"][key] * emission * self.beta[index, 0]
+            self.beta[last_row, 0] += beta_val
+        return np.log(self.beta[last_row, 0])
 
     def save_it_up(self):
         """
