@@ -7,7 +7,7 @@ them to span charts, and computes precision, recall, and F1 scores.
 
 Key Features:
     - Span-based evaluation using binary upper-triangular charts
-    - Robust tree normalization (unary collapse + lexeme uniquification)
+    - Tree normalization (unary collapse + lexeme uniquification)
     - Per-sentence and aggregate metrics computation
     - CLI interface for batch evaluation
 

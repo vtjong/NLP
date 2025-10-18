@@ -7,10 +7,7 @@ reconstructing parse trees.
 
 Key Features:
     - CKY algorithm in Chomsky Normal Form (CNF)
-    - Dynamic programming with probability maximization
     - Backpointer-based tree reconstruction
-    - Support for unknown word handling
-    - Comprehensive logging and error handling
 
 CLI Usage:
     python -m pcfg.cky --model model.pcfg --test test.txt --out output.parses
@@ -371,9 +368,6 @@ def parse_sentence(sentence: List[str], grammar: Grammar) -> Tuple[float, str]:
 
 
 # ---------------- I/O & CLI ----------------
-
-
-# ---------------- I/O and CLI Interface ----------------
 
 
 def _read_test_sentences(path: Path, vocab: Dict[str, Dict[str, float]]) -> List[List[str]]:

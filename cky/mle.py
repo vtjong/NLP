@@ -8,8 +8,6 @@ Key Features:
     - Unary chain collapsing for grammar stability
     - Unknown word handling with train/heldout split
     - Rule counting with proper normalization
-    - Log probability output for numerical stability
-    - Comprehensive error handling and validation
 
 CLI Usage:
     python -m pcfg.mle --trees path/to/trees.txt --split 0.9 --out model.pcfg
