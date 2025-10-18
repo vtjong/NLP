@@ -1,192 +1,285 @@
-import sys
+"""Parse evaluation by span charts (precision/recall/F1 per sentence).
+
+This module provides comprehensive evaluation capabilities for constituency
+parsing by comparing system-generated parses against gold standard parses.
+It normalizes trees by collapsing unary chains and uniquifying leaves, projects
+them to span charts, and computes precision, recall, and F1 scores.
+
+Key Features:
+    - Span-based evaluation using binary upper-triangular charts
+    - Robust tree normalization (unary collapse + lexeme uniquification)
+    - Per-sentence and aggregate metrics computation
+    - CLI interface for batch evaluation
+
+CLI Usage:
+    python -m pcfg.eval --sys output.parses --gold gold.txt --out output.eval
+
+Example:
+    >>> sys_parses = ["(S (NP John) (VP runs))"]
+    >>> gold_parses = ["(S (NP John) (VP runs))"]
+    >>> precisions, recalls, f1s = evaluate(sys_parses, gold_parses)
+    >>> print(f"F1: {f1s[0]:.3f}")
+    F1: 1.000
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+from pathlib import Path
+from typing import Dict, List, Sequence, Tuple
+
 import numpy as np
-from tree import Tree
 
-class TreeMaker:
-    def __init__(self, tree_str_rep):
-        self.span = []
-        self.tree = self.make_tree(tree_str_rep)
+from .exceptions import EvaluationError, FileError
+from .tree import Tree
 
-    def is_unary(self, node):
-        """
-        [is_unary(tree)] takes in a node representing the head of a tree object 
-        and checks if the given level is unary or not. 
-        """
-        children = node.ch
-        number_children = len(children)
-        if number_children != 1: return 0
+# Configure logging
+logger = logging.getLogger(__name__)
 
-        child = children[0]
-        grand_children = child.ch
-        number_grand_children = len(grand_children)
-        if number_grand_children == 0: return 0
 
-        return 1
-    
-    def visit(self, node, visited, lexeme):
-        """
-        [visited(node, visited_dict, lexeme)] updates the names of all lexemes 
-        with their count vals in the sentence to enforce lexeme uniqueness. 
-        """
-        visited[lexeme] = 1 if lexeme not in visited else visited[lexeme] + 1
-        node.c = lexeme + "_" + str(visited[lexeme])
-        self.span.append(node.c)
+def _read_sys_parses(path: Path) -> List[str]:
+    """Read system parse output file, filtering out log-likelihood lines.
 
-    def update_tree(self, node, visited):
-        """
-        [update_tree] recursively collapses all the unary levels in tree with 
-        head [node] and calls self.visit to handle logic for changing leaf nodes. 
-        """
-        num_children, children, node_tag = len(node.ch), node.ch, node.c
+    :param path: Path to system output file
+    :return: List of parse tree strings
+    :raises FileNotFoundError: If the file does not exist
+    :raises UnicodeDecodeError: If the file cannot be decoded as UTF-8
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        filtered_lines = [ln for ln in lines if ln and not ln.startswith("LL")]
+        logger.info(f"Read {len(filtered_lines)} system parses from {path}")
+        return filtered_lines
+    except FileNotFoundError:
+        logger.error(f"System parses file not found: {path}")
+        raise FileError(
+            f"System parses file not found: {path}", file_path=str(path), operation="read"
+        )
+    except UnicodeDecodeError as e:
+        logger.error(f"Failed to decode system parses file {path}: {e}")
+        raise FileError(
+            f"Failed to decode system parses file {path}: {e}",
+            file_path=str(path),
+            operation="read",
+        )
 
-        if num_children == 0: 
-            self.visit(node, visited, node.c)
-            return node
 
-        if self.is_unary(node):
-            child = children[0]
-            node.c, node.ch = node_tag + "+" + child.c, child.ch
+def _read_gold_parses(path: Path) -> List[str]:
+    """Read gold standard parse file.
 
-        # Recursively collapse all unary levels in a node's children and 
-        # reassign the collapsed version to node, building up
-        node.ch = [self.update_tree(children[i], visited) for i in range(num_children)]
-        return node
+    :param path: Path to gold standard file
+    :return: List of gold parse tree strings
+    :raises FileNotFoundError: If the file does not exist
+    :raises UnicodeDecodeError: If the file cannot be decoded as UTF-8
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        filtered_lines = [ln for ln in lines if ln]
+        logger.info(f"Read {len(filtered_lines)} gold parses from {path}")
+        return filtered_lines
+    except FileNotFoundError:
+        logger.error(f"Gold parses file not found: {path}")
+        raise FileError(
+            f"Gold parses file not found: {path}", file_path=str(path), operation="read"
+        )
+    except UnicodeDecodeError as e:
+        logger.error(f"Failed to decode gold parses file {path}: {e}")
+        raise FileError(
+            f"Failed to decode gold parses file {path}: {e}", file_path=str(path), operation="read"
+        )
 
-    def make_tree(self, tree_str_rep):
-        """
-        [make_tree(tree_str_rep] converts [tree_str_rep] to tree object and 
-        returns node corresponding to tree head. 
-        """
-        tree = Tree()
-        tree.read(tree_str_rep)
-        return self.update_tree(tree, dict())
 
-class Eval:
-    def __init__(self):
-        self.parse_files()
-        out_charts = self.make_charts(self.outtrees_and_spans)
-        gold_charts = self.make_charts(self.goldtrees_and_spans)
-        precision, recall, f_measure = self.evaluate(out_charts, gold_charts)
-        self.save_it_up(precision, recall, f_measure)
+def _spans_list(t: Tree) -> List[str]:
+    """Collect leaves (lexemes) depth-first in order.
 
-    def parse_files(self):
-        """
-        [parse_files] reads in files, extracts lists of tree string representations, 
-        and builds lists of trees.
-        """
-        out_file, gold_file = sys.argv[1], sys.argv[2]
-        
-        # Read in output parses and construct tree, span lists
-        with open(out_file, "r") as file:
-            lines = file.read().strip().split("\n")
-        self.outparses = [line for line in lines if line[0] != "L"]
-        
-        self.out_treemakers = [TreeMaker(tree_str) for tree_str in self.outparses]
-        self.outtrees_and_spans = [
-            (tree_obj.tree, tree_obj.span)
-            for tree_obj in self.out_treemakers
-        ]
-        # print(self.out_trees_span)
+    :param t: Input tree
+    :return: List of leaf lexemes in depth-first order
+    """
+    if t.is_leaf():
+        return [t.c]
+    spans: List[str] = []
+    for ch in t.ch:
+        spans.extend(_spans_list(ch))
+    return spans
 
-        # Read in gold parses and construct tree, span lists
-        with open(gold_file, "r") as file:
-            self.goldparses = file.read().strip().split("\n")
 
-        self.gold_treemakers = [TreeMaker(tree_str) for tree_str in self.goldparses]
-        self.goldtrees_and_spans = [
-            (tree_obj.tree, tree_obj.span)
-            for tree_obj in self.gold_treemakers
-        ]
+def _chart_for_tree(t: Tree) -> np.ndarray:
+    """Convert a tree to a binary upper-triangular chart of spans.
 
-    def get_span(self, tree):
-        """
-        [get_span(tree)] returns a list of spans for a given tree. 
-        """
-        span, val, children, num_children = [], tree.c, tree.ch, len(tree.ch)
+    Creates a binary matrix where chart[i, j] = 1 if there exists a span
+    from position i to position i+j in the tree.
 
-        if num_children == 0:
-            span.append(val)
-            return span
+    :param t: Input tree
+    :return: Binary upper-triangular chart matrix
+    """
+    # Build lexeme index map
+    ordered = _spans_list(t)
+    idx: Dict[str, int] = {lex: i for i, lex in enumerate(ordered)}
+    n = len(ordered)
+    chart = np.zeros((n, n), dtype=int)
 
-        for child in children: span.extend(self.get_span(child))
-        return span
-    
-    def tree_to_chart(self, tree, chart, lexeme_idx_d):
-        """
-        [tree_to_chart()] converts a tree into a chart of values with indices 
-        of children's spans. 
-        """
-        children, num_children = tree.ch, len(tree.ch)
-        if num_children == 0: return chart
-        span = self.get_span(tree)
-        span_coord = lambda a, dict: (dict[a[0]], len(a) - 1)
-        coord = span_coord(span, lexeme_idx_d)
-        chart[coord[0], coord[1]] = 1
+    def visit(node: Tree) -> None:
+        """Recursively mark spans in the chart."""
+        if node.is_leaf():
+            return
+        leaves = _spans_list(node)
+        i0 = idx[leaves[0]]
+        length = len(leaves) - 1
+        chart[i0, length] = 1
+        for ch in node.ch:
+            visit(ch)
 
-        for child in children: chart += self.tree_to_chart(child, chart, lexeme_idx_d)
-        return chart
-    
-    def make_charts(self, trees_and_spans):
-        """
-        [make_chart()] takes in list trees_and_spans and constructs a list of charts 
-        with each tree's children's spans. 
-        """
-        charts = []
-        for tree, span in trees_and_spans:
-            lexeme_idx_d = {key: idx for (idx, key) in enumerate(span)}
-            len_span = len(span)
-            charts.append(self.tree_to_chart(
-                tree, np.zeros((len_span, len_span)), lexeme_idx_d
-            ))
-        return charts
-    
-    def compute_vals(self, out_chart, gold_chart):
-        """
-        [compute_vals()] calculates the total number of correct predict
-        """
-        num_sent = len(out_chart)
-        num_true_pos, n_out, n_gold = 0, 0, 0
+    visit(t)
+    return chart
 
-        acc = lambda n, i, j, chart: n+1 if (chart[i, j] != 0) else n
 
-        for i in range(num_sent):
-            for j in range(len(out_chart[i])):
-                n_gold = acc(n_gold, i, j, gold_chart)
-                n_out = acc(n_out, i, j, out_chart)
-                if gold_chart[i, j] != 0 and out_chart[i, j] != 0:
-                    num_true_pos += 1
-        
-        return num_true_pos, n_out, n_gold
-    
-    def evaluate(self, output_charts, gold_charts):
-        """
-        [evaluate(output_charts, gold_charts)] calculates the recall, precision, 
-        and f_measure to compare output model parses and gold model parses. 
-        """
-        out_gold_charts = zip(output_charts, gold_charts)
-        stats = [self.compute_vals(out, gold) for out, gold in out_gold_charts]
-        eval = lambda a, b : float(a) / b if b != 0 else 0.0
+def _compute_counts(sys_chart: np.ndarray, gold_chart: np.ndarray) -> Tuple[int, int, int]:
+    """Compute span counts for precision/recall calculation.
 
-        recalls = [eval(val[0], val[1]) for val in stats]
-        precisions = [eval(val[0], val[2]) for val in stats]
-        nums = [2 * r * p for r, p in zip(recalls, precisions)]
-        dens = [r + p for r, p in zip(recalls, precisions)]
-        f_measure = [eval(num,den) for (num, den) in zip(nums, dens)]
+    :param sys_chart: System parse chart
+    :param gold_chart: Gold standard chart
+    :return: Tuple of (true_positives, system_spans, gold_spans)
+    """
+    tp = int(np.sum((sys_chart != 0) & (gold_chart != 0)))
+    sys_n = int(np.sum(sys_chart != 0))
+    gold_n = int(np.sum(gold_chart != 0))
+    return tp, sys_n, gold_n
 
-        return precisions, recalls, f_measure
 
-    def save_it_up(self, precision, recall, f_measure):
-        """
-        [save_it_up()] dumps all stats in model.pcfg.
-        """
-        with open("output.eval", "w") as file:
-            for i in range(len(precision)):
-                file.write("P " + str(precision[i]) + ";")
-                file.write("R " + str(recall[i]) + ";")
-                file.write("F " + str(f_measure[i]) + "\n")
+def _safe_div(a: float, b: float) -> float:
+    """Safely divide two numbers, returning 0.0 if denominator is zero.
 
-def main():
-    Eval()
+    :param a: Numerator
+    :param b: Denominator
+    :return: a/b if b != 0, else 0.0
+    """
+    return (a / b) if b else 0.0
 
-if __name__ == '__main__':
+
+def evaluate(
+    sys_parses: Sequence[str], gold_parses: Sequence[str]
+) -> Tuple[List[float], List[float], List[float]]:
+    """Compute per-sentence precision, recall, and F1 scores.
+
+    This function evaluates constituency parsing performance by comparing
+    system-generated parses against gold standard parses using span-based
+    metrics. Trees are normalized by collapsing unary chains and uniquifying
+    lexemes before evaluation.
+
+    :param sys_parses: System-generated parse trees (one per line)
+    :param gold_parses: Gold standard parse trees (one per line)
+    :return: Tuple of (precisions, recalls, f1s) lists aligned to input order
+    :raises ValueError: If the number of system and gold parses don't match
+    :raises ValueError: If any parse string is malformed
+    """
+    if len(sys_parses) != len(gold_parses):
+        raise ValueError(
+            f"Mismatched parse counts: {len(sys_parses)} system vs {len(gold_parses)} gold"
+        )
+
+    precisions: List[float] = []
+    recalls: List[float] = []
+    f1s: List[float] = []
+
+    for i, (sys_t, gold_t) in enumerate(zip(sys_parses, gold_parses)):
+        try:
+            sys_tree = Tree.from_string(sys_t).collapse_unary().uniquify_lexemes()
+            gold_tree = Tree.from_string(gold_t).collapse_unary().uniquify_lexemes()
+            sys_chart = _chart_for_tree(sys_tree)
+            gold_chart = _chart_for_tree(gold_tree)
+            tp, sys_n, gold_n = _compute_counts(sys_chart, gold_chart)
+            p = _safe_div(tp, sys_n)
+            r = _safe_div(tp, gold_n)
+            f = _safe_div(2 * p * r, p + r)
+            precisions.append(p)
+            recalls.append(r)
+            f1s.append(f)
+        except ValueError as e:
+            logger.error(f"Failed to parse sentence {i}: {e}")
+            raise EvaluationError(
+                f"Parse error at sentence {i}: {e}",
+                sentence_index=i,
+                parse_info={"sys_parse": sys_t, "gold_parse": gold_t},
+            ) from e
+
+    logger.info(f"Evaluated {len(precisions)} sentences")
+    return precisions, recalls, f1s
+
+
+def write_eval(
+    out_path: Path, precisions: List[float], recalls: List[float], f1s: List[float]
+) -> None:
+    """Write evaluation results to output file.
+
+    :param out_path: Output file path
+    :param precisions: List of precision scores
+    :param recalls: List of recall scores
+    :param f1s: List of F1 scores
+    :raises OSError: If the file cannot be written
+    """
+    try:
+        with out_path.open("w", encoding="utf-8") as fh:
+            for p, r, f in zip(precisions, recalls, f1s):
+                fh.write(f"P {p:.6f};R {r:.6f};F {f:.6f}\n")
+        logger.info(f"Wrote evaluation results to {out_path}")
+    except OSError as e:
+        logger.error(f"Failed to write evaluation results to {out_path}: {e}")
+        raise FileError(
+            f"Failed to write evaluation results to {out_path}: {e}",
+            file_path=str(out_path),
+            operation="write",
+        )
+
+
+def main(argv: List[str] | None = None) -> None:
+    """Main CLI entry point for parse evaluation.
+
+    :param argv: Command line arguments (for testing)
+    """
+    parser = argparse.ArgumentParser(
+        description="Evaluate constituency parses against gold standard",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  %(prog)s --sys output.parses --gold gold.txt --out results.eval
+  %(prog)s --sys parses.txt --gold gold.txt --out eval.txt
+        """,
+    )
+    parser.add_argument(
+        "--sys", required=True, help="System parse output file (format: tree per line)"
+    )
+    parser.add_argument(
+        "--gold", required=True, help="Gold standard parse file (format: tree per line)"
+    )
+    parser.add_argument(
+        "--out", default="output.eval", help="Output evaluation file path (default: output.eval)"
+    )
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
+
+    args = parser.parse_args(argv)
+
+    # Configure logging
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(
+        level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    try:
+        sys_parses = _read_sys_parses(Path(args.sys))
+        gold_parses = _read_gold_parses(Path(args.gold))
+        p, r, f = evaluate(sys_parses, gold_parses)
+        write_eval(Path(args.out), p, r, f)
+
+        # Print summary statistics
+        avg_p = sum(p) / len(p) if p else 0.0
+        avg_r = sum(r) / len(r) if r else 0.0
+        avg_f = sum(f) / len(f) if f else 0.0
+        print(f"Evaluation complete: Avg P={avg_p:.3f}, R={avg_r:.3f}, F1={avg_f:.3f}")
+
+    except Exception as e:
+        logger.error(f"Evaluation failed: {e}")
+        raise
+
+
+if __name__ == "__main__":
     main()

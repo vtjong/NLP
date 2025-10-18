@@ -1,231 +1,499 @@
-import sys
+"""CKY parser for PCFGs with backpointers and bracketed-tree output.
+
+This module implements the Cocke-Kasami-Younger (CKY) algorithm for parsing
+Probabilistic Context-Free Grammars (PCFGs). It provides efficient parsing
+of tokenized sentences using dynamic programming with backpointers for
+reconstructing parse trees.
+
+Key Features:
+    - CKY algorithm in Chomsky Normal Form (CNF)
+    - Dynamic programming with probability maximization
+    - Backpointer-based tree reconstruction
+    - Support for unknown word handling
+    - Comprehensive logging and error handling
+
+CLI Usage:
+    python -m pcfg.cky --model model.pcfg --test test.txt --out output.parses
+
+Example:
+    >>> grammar = Grammar.from_file("model.pcfg")
+    >>> sentence = ["The", "cat", "runs"]
+    >>> log_prob, tree = parse_sentence(sentence, grammar)
+    >>> print(f"Log probability: {log_prob:.3f}")
+    >>> print(f"Parse tree: {tree}")
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import math
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 
-class TreeMaker:
-    def __init__(self, idx_pos, tree_roots_idx):
-        self.idx_pos = idx_pos
-        self.tree_roots_idx = tree_roots_idx
+from .exceptions import FileError, GrammarError, ParsingError
+from .tree import Tree
 
-    def get_best_root(self, *args):
+# Configure logging
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Grammar:
+    """In-memory PCFG representation in probability space (not log).
+
+    This class encapsulates a Probabilistic Context-Free Grammar with
+    binary and lexical rules, along with tag indexing for efficient
+    tensor operations during parsing.
+
+    Attributes:
+        binary: Mapping from (left_tag, right_tag) pairs to parent
+                probabilities
+        lexical: Mapping from words to preterminal probabilities
+        tags: Sorted list of all grammatical tags
+        tag_to_idx: Mapping from tag strings to integer indices
+        idx_to_tag: Mapping from integer indices to tag strings
+        root_tag_idxs: Mapping from root tag names to their indices
+    """
+
+    # Binary rules: (left_tag, right_tag) -> {parent_tag -> probability}
+    binary: Dict[Tuple[str, str], Dict[str, float]]
+    # Lexical rules: word -> {preterminal_tag -> probability}
+    lexical: Dict[str, Dict[str, float]]
+    # Tag indexing for efficient tensor operations
+    tags: List[str]
+    tag_to_idx: Dict[str, int]
+    idx_to_tag: Dict[int, str]
+    root_tag_idxs: Dict[str, int]
+
+    @classmethod
+    def from_file(cls, path: Path) -> "Grammar":
+        """Load a Grammar from a PCFG model file.
+
+        :param path: Path to the PCFG model file
+        :return: Loaded Grammar instance
+        :raises FileNotFoundError: If the model file does not exist
+        :raises ValueError: If the model file format is invalid
         """
-        [get_best_root()] computes the most likely root after viterbi is completed
-        and the associated probability [max]. If one cannot be found, 
-        outputs [fail_flag] indicating as such. 
-        """
-        n, trellis = args
-        best_root_pr, best_root_idx = 0, str()
-        fail_flag = True
-        for root, root_idx in self.tree_roots_idx.items():
-            contender_pr = trellis[-1][0][root_idx]
-            if contender_pr!= 0:
-                fail_flag = False
-                if contender_pr > best_root_pr: # Update new best
-                    best_root_pr, best_root_idx = contender_pr , root_idx
-        root = (n - 1, 0, best_root_idx)
-        return root, best_root_pr, fail_flag
-    
-    def get_children(self, ptr, tag, bkptr):
-        """
-        [get_children()] gets left and right children info.
-        """
-        children = bkptr[ptr[0], ptr[1], tag]
-        return children[1], children[2], children[3], children[-1]
-    
-    def tree_traverse(self, ptr, tag, bkptr, sentence):
-        """
-        [tree_traverse()] traverses through all nodes and builds up trees recursively.
-        """
-        i, j = ptr[0], ptr[1]
-        tree = "(" + self.idx_pos[tag]
+        return _read_model(path)
 
-        # Base case
-        if i == 0: return tree + " " + str(sentence[j]) + ")"
 
-        # Recursively get subtrees
-        lt_ptr, rt_ptr, lt_lab, rt_lab = self.get_children(ptr, tag, bkptr)
-        lt_tree = self.tree_traverse(lt_ptr, lt_lab, bkptr, sentence)
-        rt_tree = self.tree_traverse(rt_ptr, rt_lab, bkptr, sentence)
-        tree += " " + lt_tree + " " + rt_tree + ")"
+def _read_model(path: Path) -> Grammar:
+    """Load a PCFG model from file and construct Grammar object.
 
-        return tree
+    Expected format:
+        G <LHS> : <LEFT> <RIGHT> <log_prob>
+        X <PRETERM> : <WORD> <log_prob>
 
-    def tree_handler(self, bkptr, root_info, sentence):
-        """
-        [tree_handler()] handles all the backtracing, tree building logic for 
-        given a tree with [root], accessing children through [bckptr].
-        """
-        n, root_pos = len(sentence), self.idx_pos[root_info[2]]
+    :param path: Path to the PCFG model file
+    :return: Grammar instance
+    :raises FileNotFoundError: If the model file does not exist
+    :raises ValueError: If the model file format is invalid
+    """
+    try:
+        pos: set[str] = set()
+        binary: Dict[Tuple[str, str], Dict[str, float]] = {}
+        lexical: Dict[str, Dict[str, float]] = {}
 
-        # Begin tree
-        tree = "(" + root_pos
+        for line_num, line in enumerate(path.read_text(encoding="utf-8").strip().splitlines(), 1):
+            parts = line.strip().split()
+            if not parts:
+                continue
 
-        # Single node case
-        if n<=1: return tree + " " + str(sentence[0]) + ")"
+            if len(parts) < 5:
+                raise GrammarError(
+                    f"Invalid line format at line {line_num}: {line}", line_number=line_num
+                )
 
-        # General case
-        lt_ptr, rt_ptr, lt_lab, rt_lab = self.get_children(root_info[:2], root_info[2], bkptr)
-        root_left_tree = self.tree_traverse(lt_ptr, lt_lab, bkptr, sentence)
-        root_right_tree = self.tree_traverse(rt_ptr, rt_lab, bkptr, sentence)
-        tree += " " + root_left_tree + " " + root_right_tree + ")"
-
-        return tree
-
-class CKY:
-    def __init__(self):
-        self.pos = set()
-        self.vocab = set()
-        self.word_pr = {}
-        self.pos_pr = {}
-        self.parse_pcfg()
-        self.num_tags = len(self.pos)
-        self.parse_testfile()
-        self.treemaker = TreeMaker(self.idx_pos, self.tree_roots_idx)
-        self.test_prs = [self.cky(sentence) for sentence in self.sentences]
-        self.save_it_up() 
-    
-    def make_dict(self, *args):
-        dict, key1, key2, val = args
-        dict.setdefault(key1, {})
-        dict[key1][key2] = val
-
-    def cky_base(self, sentence):
-        """
-        [cky_base()] initializes cky data structs and fills in base probabilities.
-        """
-        num_words = len(sentence)
-        # chart contains probs from lower trig mat
-        trellis = np.zeros((num_words, num_words, self.num_tags)) 
-        bckptr = np.empty_like(trellis, dtype=object)
-        bckptr.fill((-1, (-1, -1), (-1, -1), -1, -1))   
-
-        # Iterate through all sentences and test words 
-        for i in range(num_words):
-            word = sentence[i]
-            for key in self.word_pr[word]:
-                key_ind = self.pos_idx[key]
-                trellis[0, i, key_ind] = self.word_pr[word][key]
-        return trellis, bckptr
-
-    def cky_ind(self, trellis, bckptr, *args):
-        """
-        [cky_ind()] conducts the inductive step for a given sentence.
-        """
-        # We are going to use log probabilities so we should add them
-        # When we use log probabilities, they are all negative, but the less 
-        # negative the better, so we still compare by doing if contender > current one
-        i,j,k = args
-        row, col = i - k - 1, j + k + 1
-        
-        for (left_ch, right_ch) in self.pos_pr:
-            left_idx, right_idx = self.pos_idx[left_ch], self.pos_idx[right_ch]
-            for node, node_pr in self.pos_pr[(left_ch, right_ch)].items():
-                # node_pr = self.pos_pr[(left_ch, right_ch)][node]
-                left_pr, right_pr = trellis[k, j, left_idx], trellis[row, col, right_idx]
-                contender_pr = node_pr * left_pr * right_pr
-                
-                # Now we have two conditions to check
-                #   (1) valid prob left_prob > 0 and right_prob > 0 (bcuz we initialize to -1)
-                #   (2) contender prob is better than OPT 
-                #       - if so, change OPT to it
-                #       - assign backpointer to its previous one
-                node_idx = self.pos_idx[node]
-                valid_prob = left_pr > 0 and right_pr > 0
-                contender_is_sup = contender_pr > trellis[i, j, node_idx] 
-
-                if (valid_prob and contender_is_sup):
-                    trellis[i, j, node_idx] = contender_pr
-                    bckptr[i, j, node_idx] = (
-                        contender_pr,
-                        (k, j),
-                        (row, col),
-                        left_idx,
-                        right_idx
+            kind = parts[0]
+            if kind == "G":
+                # G LHS : LEFT RIGHT logp
+                if len(parts) != 6 or parts[2] != ":":
+                    raise GrammarError(
+                        f"Invalid binary rule format at line {line_num}: {line}",
+                        line_number=line_num,
                     )
+                lhs, left, right, logp_str = parts[1], parts[3], parts[4], parts[5]
+                try:
+                    logp = float(logp_str)
+                except ValueError:
+                    raise GrammarError(
+                        f"Invalid log probability at line {line_num}: {logp_str}",
+                        line_number=line_num,
+                    )
+                p = math.exp(logp)
+                pos.update([lhs, left, right])
+                binary.setdefault((left, right), {})[lhs] = p
 
-    def cky(self, sentence):
-        """
-        [cky()] performs the CKY algorithm, using the lower triangle method.
-        """
-        # Base step
-        trellis, bkptr = self.cky_base(sentence)
-        num_words = len(sentence)
+            elif kind == "X":
+                # X PRETERM : WORD logp
+                if len(parts) != 5 or parts[2] != ":":
+                    raise GrammarError(
+                        f"Invalid lexical rule format at line {line_num}: {line}",
+                        line_number=line_num,
+                    )
+                lhs, word, logp_str = parts[1], parts[3], parts[4]
+                try:
+                    logp = float(logp_str)
+                except ValueError:
+                    raise GrammarError(
+                        f"Invalid log probability at line {line_num}: {logp_str}",
+                        line_number=line_num,
+                    )
+                p = math.exp(logp)
+                pos.add(lhs)
+                lexical.setdefault(word, {})[lhs] = p
 
-        # Inductive step
-        for i in range(1, num_words):
-            for j in range(num_words - i):
-                for k in range(i):
-                    self.cky_ind(trellis, bkptr, i, j, k)
-        
-        # Handle logic to find root
-        root, root_pr, fail_flag = self.treemaker.get_best_root(num_words, trellis)
+            else:
+                logger.warning(f"Unknown rule type '{kind}' at line {line_num}: {line}")
 
-        # Retrace sequence if one exists, otherwise "FAIL" and "nan"
-        if fail_flag: 
-            tree, root_pr = "FAIL", "nan"
-        else: 
-            tree = self.treemaker.tree_handler(bkptr, root, sentence)
-        
-        tree_pr = np.log(float(root_pr))
-        return tree_pr, tree
-            
-    def parse_pcfg(self):
-        '''
-        [parse_pcfg()] reads in grammar file and generates structures to store 
-        pos tags, vocab, and probabilities of both. 
-        '''  
-        input_file = sys.argv[1]
-        with open(input_file, "r") as file:
-            file = file.read().strip().split("\n")
-        for line in file:
-            line = line.split(" ")
-            if line[0] == "G":
-                node, left_child, right_child = line[1], line[3], line[4]
-                log_prob = np.exp(float(line[-1]))
-                self.pos.update((node, left_child, right_child))
-                self.make_dict(self.pos_pr, (left_child, right_child), node, log_prob)
-            elif line[0] == "X":
-                preterm, term, log_prob = line[1], line[3], np.exp(float(line[-1]))
-                self.pos.add(preterm)
-                self.make_dict(self.word_pr, term, preterm, log_prob)
-        self.pos = list(self.pos)
-        self.pos_idx = {key: idx for idx, key in enumerate(self.pos)}
-        self.idx_pos = {idx:key for (key, idx) in self.pos_idx.items()}
-        self.tree_roots_idx = {
-            pos: idx
-            for pos, idx in self.pos_idx.items()
-            if "ROOT" in pos and "|" not in pos
-        }
-        self.tree_roots = list(self.tree_roots_idx.keys())
+        tags = sorted(pos)
+        tag_to_idx = {t: i for i, t in enumerate(tags)}
+        idx_to_tag = {i: t for t, i in tag_to_idx.items()}
+        root_tag_idxs = {t: tag_to_idx[t] for t in tags if "ROOT" in t and "|" not in t}
 
-    def parse_testfile(self):
-        """
-        [parse_testfile()] reads in testfile and generates a list of test sentences, 
-        saved in [self.sentences].
-        """
-        test_file = sys.argv[2]
-        with open(test_file) as test_file:
-            sentences = test_file.read().strip().split("\n")
-        self.sentences = [
-            [word if word in self.word_pr else "<UNK-T>" for word in sent.split(" ")]
-            for sent in sentences
-        ]
+        logger.info(
+            f"Loaded grammar with {len(tags)} tags, {len(binary)} binary rules, {len(lexical)} lexical entries"
+        )
+        return Grammar(binary, lexical, tags, tag_to_idx, idx_to_tag, root_tag_idxs)
 
-    def save_it_up(self):
-        """
-        [save_it_up()] dumps all trees and stats into output.parses.
-        """
-        with open("output.parses", "w") as out_file:
-            count = len(self.test_prs)
-            print(count)
-            for idx in range(count):
-                pr = str(self.test_prs[idx][0])
-                print(pr)
-                tree = self.test_prs[idx][1]
-                out_file.write("LL" + str(idx) + ": " + pr + "\n")
-                out_file.write(tree + "\n")
+    except FileNotFoundError:
+        logger.error(f"Model file not found: {path}")
+        raise FileError(f"Model file not found: {path}", file_path=str(path), operation="read")
+    except UnicodeDecodeError as e:
+        logger.error(f"Failed to decode model file {path}: {e}")
+        raise FileError(
+            f"Failed to decode model file {path}: {e}", file_path=str(path), operation="read"
+        )
 
-def main():
-    CKY()
 
-if __name__ == '__main__':
+# ---------------- CKY Algorithm Core ----------------
+
+
+def _cky_base(
+    sentence: List[str],
+    num_tags: int,
+    lex: Dict[str, Dict[str, float]],
+    tag_to_idx: Dict[str, int],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Initialize CKY trellis and backpointer arrays.
+
+    Sets up the base case for lexical rules (length-1 spans) in the
+    dynamic programming table.
+
+    :param sentence: Tokenized input sentence
+    :param num_tags: Number of grammatical tags
+    :param lex: Lexical rule probabilities
+    :param tag_to_idx: Tag to index mapping
+    :return: Tuple of (trellis, backpointer) arrays
+    """
+    n = len(sentence)
+    trellis = np.zeros((n, n, num_tags), dtype=float)
+    bkptr = np.empty((n, n, num_tags), dtype=object)
+    bkptr.fill(None)
+
+    for j, w in enumerate(sentence):
+        dist = lex.get(w, {})  # UNK handling via upstream data preparation
+        for t, p in dist.items():
+            trellis[0, j, tag_to_idx[t]] = p
+
+    logger.debug(f"Initialized CKY trellis for sentence of length {n}")
+    return trellis, bkptr
+
+
+def _cky_inductive(
+    trellis: np.ndarray,
+    bkptr: np.ndarray,
+    i: int,
+    j: int,
+    k: int,
+    grammar: Grammar,
+) -> None:
+    """Apply CKY inductive step for span [j, j+i+1).
+
+    Updates the trellis and backpointer arrays for span length i+1,
+    starting at position j, using split point k.
+
+    :param trellis: Dynamic programming probability table
+    :param bkptr: Backpointer table for tree reconstruction
+    :param i: Span length minus 1
+    :param j: Starting position
+    :param k: Split point
+    :param grammar: Grammar rules
+    """
+    row, col = i - k - 1, j + k + 1
+    for (left_t, right_t), parent_map in grammar.binary.items():
+        l_idx = grammar.tag_to_idx[left_t]
+        r_idx = grammar.tag_to_idx[right_t]
+        left_p = trellis[k, j, l_idx]
+        right_p = trellis[row, col, r_idx]
+
+        if left_p == 0.0 or right_p == 0.0:
+            continue
+
+        prod = left_p * right_p
+        for parent_t, rule_p in parent_map.items():
+            p_idx = grammar.tag_to_idx[parent_t]
+            cand = rule_p * prod
+            if cand > trellis[i, j, p_idx]:
+                trellis[i, j, p_idx] = cand
+                bkptr[i, j, p_idx] = (
+                    cand,  # best probability for this cell/parent
+                    (k, j),  # left span pointer
+                    (row, col),  # right span pointer
+                    l_idx,  # left tag index
+                    r_idx,  # right tag index
+                )
+
+
+def _best_root(
+    n: int, trellis: np.ndarray, grammar: Grammar
+) -> Tuple[Optional[Tuple[int, int, int]], float]:
+    """Find the best root parse for the complete sentence.
+
+    Searches for the highest probability root tag that spans the entire
+    sentence (span [0, n)).
+
+    :param n: Sentence length
+    :param trellis: Dynamic programming probability table
+    :param grammar: Grammar with root tag definitions
+    :return: Tuple of (best_root_pointer, best_probability)
+    """
+    best_p = 0.0
+    best_idx: Optional[int] = None
+
+    for _, ridx in grammar.root_tag_idxs.items():
+        p = trellis[n - 1, 0, ridx]
+        if p > best_p:
+            best_p = p
+            best_idx = ridx
+
+    if best_idx is None or best_p == 0.0:
+        logger.warning(f"No valid root parse found for sentence of length {n}")
+        return None, 0.0
+
+    return (n - 1, 0, best_idx), best_p
+
+
+def _children(
+    ptr: Tuple[int, int, int], bkptr: np.ndarray
+) -> Tuple[Tuple[int, int], Tuple[int, int], int, int]:
+    """Extract child pointers and tag indices from backpointer.
+
+    :param ptr: Pointer tuple (i, j, tag_idx)
+    :param bkptr: Backpointer array
+    :return: Tuple of (left_ptr, right_ptr, left_tag_idx, right_tag_idx)
+    :raises ValueError: If backpointer is missing for non-leaf cell
+    """
+    i, j, tag_idx = ptr
+    record = bkptr[i, j, tag_idx]
+    if record is None:
+        raise ValueError(f"Missing backpointer for cell ({i}, {j}, {tag_idx})")
+    _, l_ptr, r_ptr, l_idx, r_idx = record
+    return l_ptr, r_ptr, l_idx, r_idx
+
+
+def _to_tree(
+    ptr: Tuple[int, int, int], bkptr: np.ndarray, idx_to_tag: Dict[int, str], sent: List[str]
+) -> str:
+    """Reconstruct bracketed tree string from backpointers.
+
+    :param ptr: Pointer tuple (i, j, tag_idx)
+    :param bkptr: Backpointer array
+    :param idx_to_tag: Index to tag mapping
+    :param sent: Original sentence tokens
+    :return: Bracketed tree string
+    :raises ValueError: If backpointer reconstruction fails
+    """
+    i, j, tag_idx = ptr
+    label = idx_to_tag[tag_idx]
+
+    if i == 0:
+        # Leaf node
+        return f"({label} {sent[j]})"
+
+    try:
+        l_ptr, r_ptr, l_idx, r_idx = _children((i, j, tag_idx), bkptr)
+        lt = _to_tree((*l_ptr, l_idx), bkptr, idx_to_tag, sent)
+        rt = _to_tree((*r_ptr, r_idx), bkptr, idx_to_tag, sent)
+        return f"({label} {lt} {rt})"
+    except ValueError as e:
+        raise ValueError(f"Tree reconstruction failed at ({i}, {j}, {tag_idx}): {e}") from e
+
+
+def parse_sentence(sentence: List[str], grammar: Grammar) -> Tuple[float, str]:
+    """Parse one tokenized sentence using the CKY algorithm.
+
+    This function implements the Cocke-Kasami-Younger algorithm for parsing
+    Probabilistic Context-Free Grammars. It uses dynamic programming to find
+    the highest probability parse tree for the input sentence.
+
+    :param sentence: Tokenized input sentence
+    :param grammar: PCFG grammar rules and probabilities
+    :return: Tuple of (log_probability, bracketed_tree_string or 'FAIL')
+    :raises ValueError: If sentence is empty or grammar is invalid
+    """
+    if not sentence:
+        raise ParsingError("Cannot parse empty sentence", sentence=sentence)
+
+    if not grammar.root_tag_idxs:
+        raise ParsingError(
+            "Grammar has no root tags defined",
+            grammar_info={"root_tags": list(grammar.root_tag_idxs.keys())},
+        )
+
+    n = len(sentence)
+    logger.debug(f"Parsing sentence of length {n}: {' '.join(sentence)}")
+
+    # Initialize CKY tables
+    trellis, bkptr = _cky_base(sentence, len(grammar.tags), grammar.lexical, grammar.tag_to_idx)
+
+    # Fill dynamic programming table
+    for i in range(1, n):
+        for j in range(0, n - i):
+            for k in range(0, i):
+                _cky_inductive(trellis, bkptr, i, j, k, grammar)
+
+    # Find best root parse
+    root_ptr, root_p = _best_root(n, trellis, grammar)
+    if root_ptr is None:
+        logger.warning(f"No valid parse found for sentence: {' '.join(sentence)}")
+        return float("nan"), "FAIL"
+
+    log_prob = math.log(root_p)
+    tree_str = _to_tree(root_ptr, bkptr, grammar.idx_to_tag, sentence)
+
+    logger.debug(f"Parse completed with log probability: {log_prob:.3f}")
+    return log_prob, tree_str
+
+
+# ---------------- I/O & CLI ----------------
+
+
+# ---------------- I/O and CLI Interface ----------------
+
+
+def _read_test_sentences(path: Path, vocab: Dict[str, Dict[str, float]]) -> List[List[str]]:
+    """Read test sentences and map unknown words to UNK token.
+
+    :param path: Path to test sentences file
+    :param vocab: Vocabulary from training data
+    :return: List of tokenized sentences with UNK mapping
+    :raises FileNotFoundError: If the test file does not exist
+    :raises UnicodeDecodeError: If the file cannot be decoded as UTF-8
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").strip().splitlines()
+
+        def map_unk(tok: str) -> str:
+            """Map unknown tokens to UNK symbol."""
+            return tok if tok in vocab else "<UNK-T>"
+
+        sentences = [[map_unk(t) for t in line.split()] for line in lines if line.strip()]
+        logger.info(f"Read {len(sentences)} test sentences from {path}")
+        return sentences
+
+    except FileNotFoundError:
+        logger.error(f"Test sentences file not found: {path}")
+        raise FileError(
+            f"Test sentences file not found: {path}", file_path=str(path), operation="read"
+        )
+    except UnicodeDecodeError as e:
+        logger.error(f"Failed to decode test sentences file {path}: {e}")
+        raise FileError(
+            f"Failed to decode test sentences file {path}: {e}",
+            file_path=str(path),
+            operation="read",
+        )
+
+
+def write_parses(out_path: Path, results: List[Tuple[float, str]]) -> None:
+    """Write parsing results to output file.
+
+    :param out_path: Output file path
+    :param results: List of (log_probability, tree_string) tuples
+    :raises OSError: If the file cannot be written
+    """
+    try:
+        with out_path.open("w", encoding="utf-8") as fh:
+            for i, (ll, tree) in enumerate(results):
+                fh.write(f"LL{i}: {ll}\n")
+                fh.write(tree + "\n")
+        logger.info(f"Wrote {len(results)} parse results to {out_path}")
+    except OSError as e:
+        logger.error(f"Failed to write parse results to {out_path}: {e}")
+        raise FileError(
+            f"Failed to write parse results to {out_path}: {e}",
+            file_path=str(out_path),
+            operation="write",
+        )
+
+
+def main(argv: List[str] | None = None) -> None:
+    """Main CLI entry point for CKY parsing.
+
+    :param argv: Command line arguments (for testing)
+    """
+    parser = argparse.ArgumentParser(
+        description="CKY parser for Probabilistic Context-Free Grammars",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  %(prog)s --model model.pcfg --test test.txt --out output.parses
+  %(prog)s --model grammar.pcfg --test sentences.txt --out results.txt
+        """,
+    )
+    parser.add_argument("--model", required=True, help="Path to PCFG model file")
+    parser.add_argument("--test", required=True, help="Path to tokenized test sentences file")
+    parser.add_argument(
+        "--out", default="output.parses", help="Output parses file path (default: output.parses)"
+    )
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
+
+    args = parser.parse_args(argv)
+
+    # Configure logging
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(
+        level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    try:
+        grammar = Grammar.from_file(Path(args.model))
+        sentences = _read_test_sentences(Path(args.test), grammar.lexical)
+
+        logger.info(f"Starting to parse {len(sentences)} sentences")
+        results = []
+        for i, sentence in enumerate(sentences):
+            try:
+                log_prob, tree = parse_sentence(sentence, grammar)
+                results.append((log_prob, tree))
+                if (i + 1) % 100 == 0:
+                    logger.info(f"Parsed {i + 1}/{len(sentences)} sentences")
+            except Exception as e:
+                logger.error(f"Failed to parse sentence {i}: {' '.join(sentence)} - {e}")
+                results.append((float("nan"), "FAIL"))
+
+        write_parses(Path(args.out), results)
+
+        # Print summary statistics
+        successful_parses = sum(1 for _, tree in results if tree != "FAIL")
+        avg_log_prob = (
+            sum(log_prob for log_prob, _ in results if not math.isnan(log_prob))
+            / successful_parses
+            if successful_parses > 0
+            else float("nan")
+        )
+        print(
+            f"Parsing complete: {successful_parses}/{len(results)} successful, avg log prob: {avg_log_prob:.3f}"
+        )
+
+    except Exception as e:
+        logger.error(f"Parsing failed: {e}")
+        raise
+
+
+if __name__ == "__main__":
     main()
