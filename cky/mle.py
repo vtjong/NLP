@@ -349,9 +349,6 @@ def write_model_pcfg(G: RuleLogProbs, X: RuleLogProbs, path: Path) -> None:
 # ---------------- CLI ----------------
 
 
-# ---------------- CLI Interface ----------------
-
-
 def _read_trees_file(path: Path) -> List[str]:
     """Read bracketed trees from file.
 
